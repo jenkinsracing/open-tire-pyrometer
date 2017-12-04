@@ -14,17 +14,18 @@
 #include <bluefruit.h>
 #include <SPI.h>
 #include "Adafruit_MAX31855.h"
+#include <neotimer.h>
 
 // Default connection is using software SPI, but comment and uncomment one of
 // the two examples below to switch between software SPI and hardware SPI:
 
 // Example creating a thermocouple instance with software SPI on any three
 // digital IO pins.
-#define MAXDO   2
-#define MAXCS   3
-#define MAXCLK  4
+#define MAXDO   2  // sparkfun SO pin
+#define MAXCS   3  // sparkfun CS pin
+#define MAXCLK  4  // sparkfun SCK pin
 
-// initialize the Thermocouple
+// initialize the Thermocouple; works fine for Sparkfun or Adafruit breakouts of MAX31855K
 Adafruit_MAX31855 thermocouple(MAXCLK, MAXCS, MAXDO);
 
 // BLE Service
@@ -35,10 +36,25 @@ BLEBas  blebas;
 // Software Timer for blinking RED LED
 SoftwareTimer blinkTimer;
 
+// Create shutdown timer
+Neotimer shutdownTimer = Neotimer(300000); // 300 second timer (5 minutes)
+
+// Pin that will trigger shutdown
+const int shutdownPin =  16;
+
+// Threshhold temperature where the probe is considered not in use
+const double shutdownThreshhold = 35;
+
 void setup()
 {
+
+  // set the shutdown pin as output:
+  pinMode(shutdownPin, OUTPUT);
+  //  start the auto shutdown timer
+  shutdownTimer.start();
+  
   Serial.begin(115200);
-  Serial.println("Bluefruit52 BLEUART Example");
+  Serial.println("Open Tire Pyrometer Serial");
   Serial.println("---------------------------\n");
 
   // Initialize blinkTimer for 1000 ms and start it
@@ -60,7 +76,7 @@ void setup()
 
   // Configure and Start Device Information Service
   bledis.setManufacturer("Jenkins Racing Open Source");
-  bledis.setModel("Open Tire Pyrometer V0.1");
+  bledis.setModel("Open Tire Pyrometer V0.2");
   bledis.begin();
 
   // Configure and Start BLE Uart Service
@@ -73,8 +89,6 @@ void setup()
   // Set up and start advertising
   startAdv();
 
-  Serial.println("Please use Adafruit's Bluefruit LE app to connect in UART mode");
-  Serial.println("Once connected, enter character(s) that you wish to send");
 }
 
 void startAdv(void)
@@ -107,8 +121,6 @@ void startAdv(void)
 
 void loop()
 {
-  // Forward data from HW Serial to BLEUART
-
     // basic readout test, just print the current temp
    Serial.print("Internal Temp = ");
    Serial.println(thermocouple.readInternal());
@@ -121,45 +133,24 @@ void loop()
      Serial.println(c);
    }
 
-double temp = thermocouple.readCelsius();
-   char charray[20];
-    double num = 11.1111111111111;
+  double temp = thermocouple.readCelsius();
+  char charray[20];
 
+  sprintf(charray, "%.1f", temp);
     
+  bleuart.write( charray, 5 );
 
-    uint8_t buf[64];
-
-    sprintf(charray, "%.1f", temp);
-    
-    int count = Serial.readBytes(buf, sizeof(buf));
-    bleuart.write( charray, 5 );
-   
-  while (Serial.available())
-  {
-    // Delay to wait for enough input, since we have a limited transmission buffer
-    delay(2);
-
-    double temp = thermocouple.readCelsius();
-
-    char charray[20];
-    double num = 11.1111111111111;
-
-    
-
-    uint8_t buf[64];
-
-    sprintf (charray, "%03i", num);
-    
-    int count = Serial.readBytes(buf, sizeof(buf));
-    bleuart.write( charray, 10 );
+  // check if the probe is above ambient; reset the shutdown timer if it is
+  if(temp > shutdownThreshhold){
+    Serial.println("Shutdown Timer was reset");
+    shutdownTimer.reset();
+    shutdownTimer.start();
   }
-
-  // Forward from BLEUART to HW Serial
-  while ( bleuart.available() )
-  {
-    uint8_t ch;
-    ch = (uint8_t) bleuart.read();
-    Serial.write(ch);
+  
+  // if the probe is at ambient check if the shutdown timer has finished
+  if(shutdownTimer.done()){
+    Serial.println("Shutdown Timer finished");
+    digitalWrite(shutdownPin, HIGH);
   }
 
   // Request CPU to enter low-power mode until an event/interrupt occurs
