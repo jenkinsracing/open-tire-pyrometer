@@ -28,13 +28,24 @@
 // initialize the Thermocouple; works fine for Sparkfun or Adafruit breakouts of MAX31855K
 Adafruit_MAX31855 thermocouple(MAXCLK, MAXCS, MAXDO);
 
-/* HRM Service Definitions
- * Heart Rate Monitor Service:  0x180D
- * Heart Rate Measurement Char: 0x2A37
- * Body Sensor Location Char:   0x2A38
+/* Pyrometer Serivce:                    142b8c89-28d2-4196-a978-6fcc64823422
+ * Pyrometer Measurement Charactersitic: 9fe5ea27-1273-47f2-b0a6-abd53bfd3ac6
  */
-BLEService        hrms = BLEService(UUID16_SVC_HEART_RATE);
-BLECharacteristic hrmc = BLECharacteristic(UUID16_CHR_HEART_RATE_MEASUREMENT);
+
+const uint8_t PYROMETER_UUID_SERVICE[] =
+{
+    0x22, 0x34, 0x82, 0x64, 0xCC, 0x6F, 0x78, 0xA9,
+    0x96, 0x41, 0xD2, 0x28, 0x89, 0x8C, 0x2B, 0x14
+};
+
+const uint8_t PYROMETER_UUID_MEASUREMENT[] =
+{
+    0xC6, 0x3A, 0xFD, 0x3B, 0xD5, 0xAB, 0xA6, 0xB0,
+    0xF2, 0x47, 0x73, 0x12, 0x27, 0xEA, 0xE5, 0x9F
+};
+
+BLEService        pyro = BLEService(PYROMETER_UUID_SERVICE); //BLEService(UUID16_SVC_HEART_RATE);
+BLECharacteristic pmes = BLECharacteristic(PYROMETER_UUID_MEASUREMENT);
 BLECharacteristic bslc = BLECharacteristic(UUID16_CHR_BODY_SENSOR_LOCATION);
 
 // BLE Service
@@ -42,10 +53,11 @@ BLEDis  bledis;
 BLEBas  blebas;
 
 uint8_t  bps = 0;
+double c;
 
 // Advanced function prototypes
 void startAdv(void);
-void setupHRM(void);
+void setupPyro(void);
 void connect_callback(uint16_t conn_handle);
 void disconnect_callback(uint16_t conn_handle, uint8_t reason);
 void cccd_callback(BLECharacteristic& chr, ble_gatts_evt_write_t* request);
@@ -88,7 +100,7 @@ void setup()
   Bluefruit.setTxPower(4);
 
   // Set the advertised device name (keep it short!)
-  Serial.println("Setting Device Name to 'Feather52 HRM'");
+  Serial.println("Setting Device Name to 'Open Tire Pyrometer'");
   Bluefruit.setName("Open Tire Pyrometer");
   
   //Bluefruit.setName(getMcuUniqueID()); // useful testing with multiple central connections
@@ -102,17 +114,17 @@ void setup()
   bledis.begin();
 
   // Configure and Start BLE Uart Service
-  bleuart.begin();
+ // bleuart.begin();
 
   // Start the BLE Battery Service and set it to 100%
   Serial.println("Configuring the Battery Service");
   blebas.begin();
   blebas.write(100);
 
-  // Setup the Heart Rate Monitor service using
+  // Setup the Pyrometer service using
   // BLEService and BLECharacteristic classes
-  Serial.println("Configuring the Heart Rate Monitor Service");
-  setupHRM();
+  Serial.println("Configuring the Pyrometer Service");
+  setupPyro();
 
   // Setup the advertising packet(s)
   Serial.println("Setting up the advertising payload(s)");
@@ -129,7 +141,7 @@ void startAdv(void)
   Bluefruit.Advertising.addTxPower();
 
   // Include bleuart 128-bit uuid
-  Bluefruit.Advertising.addService(hrms);
+  Bluefruit.Advertising.addService(pyro);
 
   // Secondary Scan Response packet (optional)
   // Since there is no room for 'Name' in Advertising packet
@@ -150,103 +162,41 @@ void startAdv(void)
   Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds  
 }
 
-void setupHRM(void)
+void setupPyro(void)
 {
-  // Configure the Heart Rate Monitor service
-  // See: https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.service.heart_rate.xml
+  // Configure the Pyrometer service
   // Supported Characteristics:
   // Name                         UUID    Requirement Properties
   // ---------------------------- ------  ----------- ----------
-  // Heart Rate Measurement       0x2A37  Mandatory   Notify
-  // Body Sensor Location         0x2A38  Optional    Read
-  // Heart Rate Control Point     0x2A39  Conditional Write       <-- Not used here
-  hrms.begin();
+  // Pyrometer Measurement        0x----  Mandatory   Notify
+
+  pyro.begin();
 
   // Note: You must call .begin() on the BLEService before calling .begin() on
   // any characteristic(s) within that service definition.. Calling .begin() on
   // a BLECharacteristic will cause it to be added to the last BLEService that
   // was 'begin()'ed!
 
-  // Configure the Heart Rate Measurement characteristic
-  // See: https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.heart_rate_measurement.xml
+  // Configure the Pyrometer Measurement characteristic
   // Permission = Notify
   // Min Len    = 1
-  // Max Len    = 8
+  // Max Len    = 3
   //    B0      = UINT8  - Flag (MANDATORY)
   //      b5:7  = Reserved
-  //      b4    = RR-Internal (0 = Not present, 1 = Present)
-  //      b3    = Energy expended status (0 = Not present, 1 = Present)
-  //      b1:2  = Sensor contact status (0+1 = Not supported, 2 = Supported but contact not detected, 3 = Supported and detected)
-  //      b0    = Value format (0 = UINT8, 1 = UINT16)
-  //    B1      = UINT8  - 8-bit heart rate measurement value in BPM
-  //    B2:3    = UINT16 - 16-bit heart rate measurement value in BPM
-  //    B4:5    = UINT16 - Energy expended in joules
-  //    B6:7    = UINT16 - RR Internal (1/1024 second resolution)
-  hrmc.setProperties(CHR_PROPS_NOTIFY);
-  hrmc.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  hrmc.setFixedLen(2);
-  hrmc.setCccdWriteCallback(cccd_callback);  // Optionally capture CCCD updates
-  hrmc.begin();
-  uint8_t hrmdata[2] = { 0b00000110, 0x40 }; // Set the characteristic to use 8-bit values, with the sensor connected and detected
-  hrmc.notify(hrmdata, 2);                   // Use .notify instead of .write!
+  //      b4    = Reserved
+  //      b3    = Reserved
+  //      b1:2  = Sensor status (0 = OK, 1 = Thermo Error, 2 = Future)
+  //      b0    = Decimals (0 = None, 1 = One)
+  //    B1:2    = UINT16  - Pyrometer temperature in C
 
-  // Configure the Body Sensor Location characteristic
-  // See: https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.body_sensor_location.xml
-  // Permission = Read
-  // Min Len    = 1
-  // Max Len    = 1
-  //    B0      = UINT8 - Body Sensor Location
-  //      0     = Other
-  //      1     = Chest
-  //      2     = Wrist
-  //      3     = Finger
-  //      4     = Hand
-  //      5     = Ear Lobe
-  //      6     = Foot
-  //      7:255 = Reserved
-  bslc.setProperties(CHR_PROPS_READ);
-  bslc.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  bslc.setFixedLen(1);
-  bslc.begin();
-  bslc.write(2);    // Set the characteristic to 'Wrist' (2)
-}
+  pmes.setProperties(CHR_PROPS_NOTIFY);
+  pmes.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  pmes.setFixedLen(3);
+  pmes.setCccdWriteCallback(cccd_callback);  // Optionally capture CCCD updates
+  pmes.begin();
+  uint8_t pyroData[3] = { 0b00000001, 0x00, 0x00 }; // Set the characteristic to one decimal and status OK
+  pmes.notify(pyroData, 3);                   // Use .notify instead of .write!
 
-void loop()
-{
-    // basic readout test, just print the current temp
-   Serial.print("Internal Temp = ");
-   Serial.println(thermocouple.readInternal());
-
-   double c = thermocouple.readCelsius();
-   if (isnan(c)) {
-     Serial.println("Something wrong with thermocouple!");
-   } else {
-     Serial.print("C = "); 
-     Serial.println(c);
-   }
-
-  double temp = thermocouple.readCelsius();
-  char charray[20];
-
-  sprintf(charray, "%.1f", temp);
-    
-  bleuart.write( charray, 5 );
-
-  // check if the probe is above ambient; reset the shutdown timer if it is
-  if(temp > shutdownThreshhold){
-    Serial.println("Shutdown Timer was reset");
-    shutdownTimer.reset();
-    shutdownTimer.start();
-  }
-  
-  // if the probe is at ambient check if the shutdown timer has finished
-  if(shutdownTimer.done()){
-    Serial.println("Shutdown Timer finished");
-    digitalWrite(shutdownPin, HIGH);
-  }
-
-  // Request CPU to enter low-power mode until an event/interrupt occurs
-  waitForEvent();
 }
 
 void connect_callback(uint16_t conn_handle)
@@ -266,6 +216,87 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
   Serial.println();
   Serial.println("Disconnected");
 }
+
+void cccd_callback(BLECharacteristic& chr, uint16_t cccd_value)
+{
+    // Display the raw request packet
+    Serial.print("CCCD Updated: ");
+    //Serial.printBuffer(request->data, request->len);
+    Serial.print(cccd_value);
+    Serial.println("");
+
+    // Check the characteristic this CCCD update is associated with in case
+    // this handler is used for multiple CCCD records.
+    if (chr.uuid == pmes.uuid) {
+        if (chr.notifyEnabled()) {
+            Serial.println("Pyrometer Measurement 'Notify' enabled");
+        } else {
+            Serial.println("Pyrometer Measurement 'Notify' disabled");
+        }
+    }
+}
+
+void loop()
+{
+    // basic readout test, just print the current temp
+   Serial.print("Internal Temp = ");
+   Serial.println(thermocouple.readInternal());
+
+  uint16_t value;
+  uint8_t pyroData[3];
+
+   double c = thermocouple.readCelsius();
+   if (isnan(c)) {
+     Serial.println("Something wrong with thermocouple!");
+     value = 0;
+     pyroData[0] = 0b00000011;
+     pyroData[1] = 0x00;
+     pyroData[2] = 0x00;
+   } else {
+     Serial.print("C = "); 
+     Serial.println(c);
+
+     value = c * 10; // cast to int
+     pyroData[0] = 0b00000001;
+     pyroData[1] = (uint8_t)value;
+     pyroData[2] = (uint8_t)(value >> 8) ;
+     //uint8_t pyroData[3] = { 0b00000001, , (uint8_t)(value >> 8) }; // { 0xFF, 0xAA }
+   }
+
+  //uint8_t hi_lo[] = { (uint8_t)(value >> 8), (uint8_t)value }; // { 0xAA, 0xFF }
+  //uint8_t lo_hi[] = { (uint8_t)value, (uint8_t)(value >> 8) }; // { 0xFF, 0xAA }
+
+  if ( Bluefruit.connected() ) {
+    //uint8_t pyroData[3] = { 0b00000111, i };           // Sensor connected, increment BPS value
+
+    // Note: We use .notify instead of .write!
+    // If it is connected but CCCD is not enabled
+    // The characteristic's value is still updated although notification is not sent
+    if ( pmes.notify(pyroData, sizeof(pyroData)) ){
+      Serial.print("Pyrometer updated to: "); Serial.println(value); 
+    }else{
+      Serial.println("ERROR: Notify not set in the CCCD or not connected!");
+    }
+  }
+
+  // check if the probe is above ambient; reset the shutdown timer if it is
+  if(c > shutdownThreshhold){
+    Serial.println("Shutdown Timer was reset");
+    shutdownTimer.reset();
+    shutdownTimer.start();
+  }
+  
+  // if the probe is at ambient check if the shutdown timer has finished
+  if(shutdownTimer.done()){
+    Serial.println("Shutdown Timer finished");
+    digitalWrite(shutdownPin, HIGH);
+  }
+
+  // Request CPU to enter low-power mode until an event/interrupt occurs
+  waitForEvent();
+}
+
+
 
 /**
  * Software Timer callback is invoked via a built-in FreeRTOS thread with
