@@ -46,14 +46,17 @@ const uint8_t PYROMETER_UUID_MEASUREMENT[] =
 
 BLEService        pyro = BLEService(PYROMETER_UUID_SERVICE); //BLEService(UUID16_SVC_HEART_RATE);
 BLECharacteristic pmes = BLECharacteristic(PYROMETER_UUID_MEASUREMENT);
-BLECharacteristic bslc = BLECharacteristic(UUID16_CHR_BODY_SENSOR_LOCATION);
 
 // BLE Service
 BLEDis  bledis;
 BLEBas  blebas;
 
-uint8_t  bps = 0;
-double c;
+// float for pyrometer measurement in degrees C
+double pyroC;
+
+// signed ints for BLE measurement
+int16_t measurement;
+int16_t measurementPrev;
 
 // Advanced function prototypes
 void startAdv(void);
@@ -69,16 +72,16 @@ SoftwareTimer blinkTimer;
 Neotimer shutdownTimer = Neotimer(300000); // 300 second timer (5 minutes)
 
 // Pin that will trigger shutdown
-const int shutdownPin =  16;
+const int SHUTDOWN_PIN =  16;
 
 // Threshhold temperature where the probe is considered not in use
-const double shutdownThreshhold = 35;
+const double SHUTDOWN_THRESHOLD = 35;
 
 void setup()
 {
 
   // set the shutdown pin as output:
-  pinMode(shutdownPin, OUTPUT);
+  pinMode(SHUTDOWN_PIN, OUTPUT);
   //  start the auto shutdown timer
   shutdownTimer.start();
   
@@ -110,11 +113,8 @@ void setup()
   // Configure and Start Device Information Service
   Serial.println("Configuring the Device Information Service");
   bledis.setManufacturer("Jenkins Racing Open Source");
-  bledis.setModel("Open Tire Pyrometer V0.2");
+  bledis.setModel("Open Tire Pyrometer V0.3");
   bledis.begin();
-
-  // Configure and Start BLE Uart Service
- // bleuart.begin();
 
   // Start the BLE Battery Service and set it to 100%
   Serial.println("Configuring the Battery Service");
@@ -166,9 +166,9 @@ void setupPyro(void)
 {
   // Configure the Pyrometer service
   // Supported Characteristics:
-  // Name                         UUID    Requirement Properties
-  // ---------------------------- ------  ----------- ----------
-  // Pyrometer Measurement        0x----  Mandatory   Notify
+  // Name                         UUID                                  Requirement Properties
+  // ---------------------------- ------------------------------------- ----------- ----------
+  // Pyrometer Measurement        9fe5ea27-1273-47f2-b0a6-abd53bfd3ac6  Mandatory   Notify
 
   pyro.begin();
 
@@ -180,22 +180,23 @@ void setupPyro(void)
   // Configure the Pyrometer Measurement characteristic
   // Permission = Notify
   // Min Len    = 1
-  // Max Len    = 3
+  // Max Len    = 4
   //    B0      = UINT8  - Flag (MANDATORY)
   //      b5:7  = Reserved
   //      b4    = Reserved
   //      b3    = Reserved
   //      b1:2  = Sensor status (0 = OK, 1 = Thermo Error, 2 = Future)
   //      b0    = Decimals (0 = None, 1 = One)
-  //    B1:2    = UINT16  - Pyrometer temperature in C
+  //    B1      = UINT8  - Spare for Future
+  //    B2:3    = UINT16  - Pyrometer temperature in C
 
   pmes.setProperties(CHR_PROPS_NOTIFY);
   pmes.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  pmes.setFixedLen(3);
+  pmes.setFixedLen(4);
   pmes.setCccdWriteCallback(cccd_callback);  // Optionally capture CCCD updates
   pmes.begin();
-  uint8_t pyroData[3] = { 0b00000001, 0x00, 0x00 }; // Set the characteristic to one decimal and status OK
-  pmes.notify(pyroData, 3);                   // Use .notify instead of .write!
+  uint8_t pyroData[4] = { 0b00000001, 0x00, 0x00, 0x00 }; // Set the characteristic to one decimal and status OK
+  pmes.notify(pyroData, 4);                               // Use .notify instead of .write!
 
 }
 
@@ -238,49 +239,57 @@ void cccd_callback(BLECharacteristic& chr, uint16_t cccd_value)
 
 void loop()
 {
-    // basic readout test, just print the current temp
-   Serial.print("Internal Temp = ");
-   Serial.println(thermocouple.readInternal());
+   // basic readout test, just print the current internal temp
+   //Serial.print("Internal Temp = ");
+   //Serial.println(thermocouple.readInternal());
 
-  uint16_t value;
-  uint8_t pyroData[3];
+  uint8_t pyroData[4];
 
-   double c = thermocouple.readCelsius();
-   if (isnan(c)) {
+   pyroC = thermocouple.readCelsius();
+   if (isnan(pyroC)) {
      Serial.println("Something wrong with thermocouple!");
-     value = 0;
+     // set status bits (error bits); set measurement to max negative value 
+     measurement = -2000;
      pyroData[0] = 0b00000011;
      pyroData[1] = 0x00;
-     pyroData[2] = 0x00;
+     pyroData[2] = (uint8_t)measurement;
+     pyroData[3] = (uint8_t)(measurement >> 8);
    } else {
      Serial.print("C = "); 
-     Serial.println(c);
+     Serial.println(pyroC);
 
-     value = c * 10; // cast to int
+     // set status and data with measurement
+     // cast double to int with tenths preceision (thermocouple readings are in .25 resoution; hundreths get dropped)
+     measurement = pyroC * 10;
      pyroData[0] = 0b00000001;
-     pyroData[1] = (uint8_t)value;
-     pyroData[2] = (uint8_t)(value >> 8) ;
-     //uint8_t pyroData[3] = { 0b00000001, , (uint8_t)(value >> 8) }; // { 0xFF, 0xAA }
+     pyroData[1] = 0x00;
+     pyroData[2] = (uint8_t)measurement;
+     pyroData[3] = (uint8_t)(measurement >> 8);
+
    }
 
+  // useful example for splitting 16bit INT to two BYTES
   //uint8_t hi_lo[] = { (uint8_t)(value >> 8), (uint8_t)value }; // { 0xAA, 0xFF }
   //uint8_t lo_hi[] = { (uint8_t)value, (uint8_t)(value >> 8) }; // { 0xFF, 0xAA }
 
   if ( Bluefruit.connected() ) {
-    //uint8_t pyroData[3] = { 0b00000111, i };           // Sensor connected, increment BPS value
-
-    // Note: We use .notify instead of .write!
-    // If it is connected but CCCD is not enabled
-    // The characteristic's value is still updated although notification is not sent
-    if ( pmes.notify(pyroData, sizeof(pyroData)) ){
-      Serial.print("Pyrometer updated to: "); Serial.println(value); 
-    }else{
-      Serial.println("ERROR: Notify not set in the CCCD or not connected!");
+    // only trigger a new notify() if thercouple changes
+    if ( measurement != measurementPrev ) {
+      // Note: We use .notify instead of .write!
+      // If it is connected but CCCD is not enabled
+      // The characteristic's value is still updated although notification is not sent
+      if ( pmes.notify(pyroData, sizeof(pyroData)) ){
+        Serial.print("Pyrometer updated to: "); Serial.println(measurement); 
+      }else{
+        Serial.println("ERROR: Notify not set in the CCCD or not connected!");
+      }
     }
+    // record the prevous value handled by BLE to check for value change
+    measurementPrev = measurement;
   }
 
   // check if the probe is above ambient; reset the shutdown timer if it is
-  if(c > shutdownThreshhold){
+  if(pyroC > SHUTDOWN_THRESHOLD){
     Serial.println("Shutdown Timer was reset");
     shutdownTimer.reset();
     shutdownTimer.start();
@@ -289,13 +298,12 @@ void loop()
   // if the probe is at ambient check if the shutdown timer has finished
   if(shutdownTimer.done()){
     Serial.println("Shutdown Timer finished");
-    digitalWrite(shutdownPin, HIGH);
+    digitalWrite(SHUTDOWN_PIN, HIGH);
   }
 
   // Request CPU to enter low-power mode until an event/interrupt occurs
   waitForEvent();
 }
-
 
 
 /**
@@ -311,6 +319,7 @@ void blink_timer_callback(TimerHandle_t xTimerID)
   (void) xTimerID;
   digitalToggle(LED_RED);
 }
+
 
 /**
  * RTOS Idle callback is automatically invoked by FreeRTOS
