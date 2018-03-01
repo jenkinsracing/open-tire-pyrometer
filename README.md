@@ -10,4 +10,8 @@ Parts List:
 * Thermocouple Connector for Breakout - https://www.sparkfun.com/products/13612  
 * Adafriot Push-button Power Switch - https://www.adafruit.com/product/1400
 * 10k ohm resistor
-
+  
+---
+V2 Finished Build
+![Open Tire Pyrometer](resources/OTirePyro1.jpg?raw=true "Open Tire Pyrometer")
+![Open Tire Pyrometer](resources/OTirePyro2.jpg?raw=true "Open Tire Pyrometer")
